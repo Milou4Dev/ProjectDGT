@@ -7,7 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
+	"os/signal"
 	"strings"
 	"time"
 
@@ -15,8 +15,14 @@ import (
 )
 
 const (
-	discordBaseURL = "https://canary.discordapp.com/api/v9"
+	discordBaseURL = "https://discord.com/api/v9"
 	gatewayURL     = "wss://gateway.discord.gg/?v=9&encoding=json"
+	projectURL     = "https://github.com/Milou4Dev/ProjectDGT"
+
+	reset = "\033[0m"
+	bold  = "\033[1m"
+	green = "\033[32m"
+	red   = "\033[31m"
 )
 
 type Config struct {
@@ -29,258 +35,244 @@ type Config struct {
 }
 
 type DiscordUser struct {
-	Username      string
-	Discriminator string
-	UserID        string
+	Username      string `json:"username"`
+	Discriminator string `json:"discriminator"`
+	ID            string `json:"id"`
+}
+
+type PresenceUpdate struct {
+	Op int `json:"op"`
+	D  struct {
+		Since      int64         `json:"since"`
+		Activities []interface{} `json:"activities"`
+		Status     string        `json:"status"`
+		AFK        bool          `json:"afk"`
+	} `json:"d"`
 }
 
 func main() {
-	cfg := getConfig()
-	user := DiscordUser{}
+	printIntro()
 
-	if err := user.fetchUserInfo(cfg.Token); err != nil {
-		log.Fatalf("Failed to fetch user info: %v", err)
+	cfg, err := getConfig()
+	if err != nil {
+		log.Fatal(err)
 	}
 
-	runOnliner(cfg, user)
+	user, err := fetchUserInfo(cfg.Token)
+	if err != nil {
+		log.Fatalf("\n%sFailed%s to fetch user info: %v", bold+red, reset, err)
+	}
+	fmt.Println(bold + green + "Success!" + reset)
+
+	interrupt := make(chan os.Signal, 1)
+	signal.Notify(interrupt, os.Interrupt)
+
+	go runOnliner(cfg, user, interrupt)
+	<-interrupt
+	fmt.Println("\nExiting...")
 }
 
-func getConfig() Config {
+func printIntro() {
+	fmt.Println(bold + green + "Discord Online Status Setter" + reset)
+	fmt.Println("--------------------------------")
+	fmt.Println("ProjectDGT by Milou4Dev")
+	fmt.Printf("Source code: %s\n\n", projectURL)
+}
+
+func getConfig() (Config, error) {
 	reader := bufio.NewReader(os.Stdin)
 
-	cfg := Config{
-		Token:        prompt(reader, "Enter your Discord token: "),
-		Status:       prompt(reader, "Enter your desired status (online, dnd, idle): "),
-		CustomStatus: prompt(reader, "Enter your custom status (or type 'none' for no custom status): "),
+	fmt.Println("\n" + bold + "Configuration" + reset)
+
+	cfg := Config{}
+	var err error
+
+	cfg.Token, err = prompt(reader, "Enter your Discord token: ")
+	if err != nil {
+		return cfg, err
+	}
+	cfg.Status, err = prompt(reader, "Enter your desired status (online, dnd, idle): ")
+	if err != nil {
+		return cfg, err
+	}
+	cfg.CustomStatus, err = prompt(reader, "Enter your custom status (or type 'none' for no custom status): ")
+	if err != nil {
+		return cfg, err
 	}
 
 	if cfg.Token == "" {
-		log.Fatal("Error: A valid token is required.")
+		return cfg, fmt.Errorf(bold + red + "Error:" + reset + " A valid token is required")
 	}
 
-	if strings.ToLower(prompt(reader, "Would you like to use an emoji in your custom status? (y/n): ")) == "y" {
+	input, err := prompt(reader, "Would you like to use an emoji in your custom status? (y/n): ")
+	if err != nil {
+		return cfg, err
+	}
+	if strings.ToLower(input) == "y" {
 		cfg.UseEmoji = true
-		cfg.EmojiName = prompt(reader, "Enter the emoji name: ")
-		cfg.EmojiID = prompt(reader, "Enter the emoji ID: ")
+		cfg.EmojiName, err = prompt(reader, "Enter the emoji name: ")
+		if err != nil {
+			return cfg, err
+		}
+		cfg.EmojiID, err = prompt(reader, "Enter the emoji ID: ")
+		if err != nil {
+			return cfg, err
+		}
 	}
-
-	return cfg
+	return cfg, nil
 }
 
-func prompt(reader *bufio.Reader, message string) string {
-	fmt.Print(message)
-	input, _ := reader.ReadString('\n')
-	return strings.TrimSpace(input)
+func prompt(reader *bufio.Reader, message string) (string, error) {
+	fmt.Print(message + " ")
+	input, err := reader.ReadString('\n')
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(input), nil
 }
 
-func (u *DiscordUser) fetchUserInfo(token string) error {
+func fetchUserInfo(token string) (*DiscordUser, error) {
 	req, err := http.NewRequest("GET", discordBaseURL+"/users/@me", nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	req.Header.Set("Authorization", token)
-
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("invalid token provided")
+		return nil, fmt.Errorf("invalid token provided")
 	}
-
-	var userInfo struct {
-		Username      string `json:"username"`
-		Discriminator string `json:"discriminator"`
-		ID            string `json:"id"`
+	user := &DiscordUser{}
+	if err := json.NewDecoder(resp.Body).Decode(user); err != nil {
+		return nil, err
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&userInfo); err != nil {
-		return err
-	}
-
-	u.Username = userInfo.Username
-	u.Discriminator = userInfo.Discriminator
-	u.UserID = userInfo.ID
-
-	return nil
+	return user, nil
 }
 
-func onliner(cfg Config) {
-	conn, _, err := websocket.DefaultDialer.Dial(gatewayURL, nil)
+func runOnliner(cfg Config, user *DiscordUser, interrupt chan os.Signal) {
+	fmt.Printf("\n%sSuccessfully logged in as %s#%s (%s).%s\n", bold+green, user.Username, user.Discriminator, user.ID, reset)
+
+	fmt.Print(bold + "Setting online status... " + reset)
+	conn, err := establishWebSocketConnection(gatewayURL)
 	if err != nil {
-		log.Fatalf("Error connecting to the Discord gateway: %v", err)
+		log.Fatalf("Error connecting to Discord gateway: %v", err)
 	}
 	defer conn.Close()
 
-	var hello struct {
-		HeartbeatInterval float64 `json:"heartbeat_interval"`
+	heartbeatInterval, err := processHelloMessage(conn)
+	if err != nil {
+		log.Fatal(err)
 	}
+
+	err = authenticate(conn, cfg.Token)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	presenceUpdate := createPresenceUpdate(cfg)
+	if err := conn.WriteJSON(presenceUpdate); err != nil {
+		log.Fatalf("Error sending presence update: %v", err)
+	}
+
+	manageHeartbeatAndInterrupt(conn, heartbeatInterval, interrupt)
+}
+
+func establishWebSocketConnection(url string) (*websocket.Conn, error) {
+	dialer := *websocket.DefaultDialer
+	dialer.HandshakeTimeout = 10 * time.Second
+	conn, _, err := dialer.Dial(url, nil)
+	return conn, err
+}
+
+func processHelloMessage(conn *websocket.Conn) (time.Duration, error) {
+	hello := struct {
+		HeartbeatInterval time.Duration `json:"heartbeat_interval"`
+	}{}
+
 	if err := conn.ReadJSON(&hello); err != nil {
-		log.Fatalf("Error reading hello message from gateway: %v", err)
+		return 0, fmt.Errorf("error reading hello message: %v", err)
 	}
 
 	if hello.HeartbeatInterval <= 0 {
-		hello.HeartbeatInterval = 45000
+		hello.HeartbeatInterval = 45 * time.Second
 	}
 
-	auth := struct {
-		Op int `json:"op"`
-		D  struct {
-			Token      string `json:"token"`
-			Properties struct {
-				OS      string `json:"$os"`
-				Browser string `json:"$browser"`
-				Device  string `json:"$device"`
-			} `json:"properties"`
-			Presence struct {
-				Status string `json:"status"`
-				AFK    bool   `json:"afk"`
-			} `json:"presence"`
-		} `json:"d"`
-	}{
-		Op: 2,
-		D: struct {
-			Token      string `json:"token"`
-			Properties struct {
-				OS      string `json:"$os"`
-				Browser string `json:"$browser"`
-				Device  string `json:"$device"`
-			} `json:"properties"`
-			Presence struct {
-				Status string `json:"status"`
-				AFK    bool   `json:"afk"`
-			} `json:"presence"`
-		}{
-			Token: cfg.Token,
-			Properties: struct {
-				OS      string `json:"$os"`
-				Browser string `json:"$browser"`
-				Device  string `json:"$device"`
-			}{
-				OS:      "Windows 10",
-				Browser: "Google Chrome",
-				Device:  "Windows",
+	return hello.HeartbeatInterval, nil
+}
+
+func authenticate(conn *websocket.Conn, token string) error {
+	auth := map[string]interface{}{
+		"op": 2,
+		"d": map[string]interface{}{
+			"token": token,
+			"properties": map[string]string{
+				"$os":      "Windows",
+				"$browser": "Chrome",
+				"$device":  "ProjectDGT",
 			},
-			Presence: struct {
-				Status string `json:"status"`
-				AFK    bool   `json:"afk"`
-			}{
-				Status: cfg.Status,
-				AFK:    false,
-			},
+			"intents": 513,
 		},
 	}
 
 	if err := conn.WriteJSON(auth); err != nil {
-		log.Fatalf("Error sending authentication message to gateway: %v", err)
+		return fmt.Errorf("error sending authentication message: %v", err)
 	}
+	return nil
+}
 
-	cstatus := struct {
-		Op int `json:"op"`
-		D  struct {
-			Since      int `json:"since"`
-			Activities []struct {
-				Type  int    `json:"type"`
-				State string `json:"state"`
-				Name  string `json:"name"`
-				ID    string `json:"id"`
-				Emoji *struct {
-					Name     string `json:"name"`
-					ID       string `json:"id"`
-					Animated bool   `json:"animated"`
-				} `json:"emoji,omitempty"`
-			} `json:"activities"`
-			Status string `json:"status"`
-			AFK    bool   `json:"afk"`
-		} `json:"d"`
-	}{
+func createPresenceUpdate(cfg Config) PresenceUpdate {
+	presenceUpdate := PresenceUpdate{
 		Op: 3,
 		D: struct {
-			Since      int `json:"since"`
-			Activities []struct {
-				Type  int    `json:"type"`
-				State string `json:"state"`
-				Name  string `json:"name"`
-				ID    string `json:"id"`
-				Emoji *struct {
-					Name     string `json:"name"`
-					ID       string `json:"id"`
-					Animated bool   `json:"animated"`
-				} `json:"emoji,omitempty"`
-			} `json:"activities"`
-			Status string `json:"status"`
-			AFK    bool   `json:"afk"`
+			Since      int64         `json:"since"`
+			Activities []interface{} `json:"activities"`
+			Status     string        `json:"status"`
+			AFK        bool          `json:"afk"`
 		}{
-			Since: 0,
-			Activities: []struct {
-				Type  int    `json:"type"`
-				State string `json:"state"`
-				Name  string `json:"name"`
-				ID    string `json:"id"`
-				Emoji *struct {
-					Name     string `json:"name"`
-					ID       string `json:"id"`
-					Animated bool   `json:"animated"`
-				} `json:"emoji,omitempty"`
-			}{},
-			Status: cfg.Status,
-			AFK:    false,
+			Since:      time.Now().Unix(),
+			Activities: []interface{}{},
+			Status:     cfg.Status,
+			AFK:        false,
 		},
 	}
 
 	if cfg.CustomStatus != "none" {
-		activity := struct {
-			Type  int    `json:"type"`
-			State string `json:"state"`
-			Name  string `json:"name"`
-			ID    string `json:"id"`
-			Emoji *struct {
-				Name     string `json:"name"`
-				ID       string `json:"id"`
-				Animated bool   `json:"animated"`
-			} `json:"emoji,omitempty"`
-		}{
-			Type:  4,
-			State: cfg.CustomStatus,
-			Name:  "Custom Status",
-			ID:    "custom",
+		activity := map[string]interface{}{
+			"name":  "Custom Status",
+			"type":  4,
+			"state": cfg.CustomStatus,
 		}
-
 		if cfg.UseEmoji {
-			activity.Emoji = &struct {
-				Name     string `json:"name"`
-				ID       string `json:"id"`
-				Animated bool   `json:"animated"`
-			}{
-				Name:     cfg.EmojiName,
-				ID:       cfg.EmojiID,
-				Animated: false,
+			activity["emoji"] = map[string]interface{}{
+				"name": cfg.EmojiName,
+				"id":   cfg.EmojiID,
 			}
 		}
-
-		cstatus.D.Activities = append(cstatus.D.Activities, activity)
+		presenceUpdate.D.Activities = append(presenceUpdate.D.Activities, activity)
 	}
 
-	if err := conn.WriteJSON(cstatus); err != nil {
-		log.Fatalf("Error sending custom status to gateway: %v", err)
-	}
-
-	heartbeatTicker := time.NewTicker(time.Duration(hello.HeartbeatInterval) * time.Millisecond)
-	defer heartbeatTicker.Stop()
-
-	for range heartbeatTicker.C {
-		if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"op":1,"d":null}`)); err != nil {
-			log.Fatalf("Error sending heartbeat to gateway: %v", err)
-		}
-	}
+	return presenceUpdate
 }
 
-func runOnliner(cfg Config, user DiscordUser) {
-	cmd := exec.Command("clear")
-	cmd.Stdout = os.Stdout
-	cmd.Run()
+func manageHeartbeatAndInterrupt(conn *websocket.Conn, heartbeatInterval time.Duration, interrupt chan os.Signal) {
+	heartbeatTicker := time.NewTicker(heartbeatInterval)
+	defer heartbeatTicker.Stop()
 
-	fmt.Printf("Successfully logged in as %s#%s (%s).\n", user.Username, user.Discriminator, user.UserID)
-	onliner(cfg)
+	for {
+		select {
+		case <-heartbeatTicker.C:
+			if err := conn.WriteJSON(map[string]interface{}{"op": 1, "d": nil}); err != nil {
+				log.Fatalf("Error sending heartbeat: %v", err)
+			}
+		case <-interrupt:
+			fmt.Println("\nExiting...")
+			if err := conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "")); err != nil {
+				log.Println("Error closing WebSocket connection:", err)
+			}
+			return
+		}
+	}
 }
