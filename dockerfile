@@ -3,15 +3,15 @@ FROM golang:1.21 AS builder
 WORKDIR /app
 
 COPY go.mod go.sum ./
-RUN go mod download
+RUN go mod download && go mod verify
 
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o main .
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /app/main
 
 FROM gcr.io/distroless/base-debian11
 
 WORKDIR /app
 
-COPY --from=builder /app/main /app/
+COPY --from=builder /app/main .
 
 CMD ["/app/main"]
