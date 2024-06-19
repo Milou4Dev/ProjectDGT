@@ -23,7 +23,7 @@ communication.
 
 1. **Clone the repository:**
    ```sh
-   git clone https://github.com/yourusername/ProjectDGT.git
+   git clone https://github.com/Milou4Dev/ProjectDGT.git
    cd ProjectDGT
    ```
 
