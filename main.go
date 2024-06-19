@@ -61,6 +61,9 @@ type Activity struct {
 func main() {
 	printHeader()
 
+	fmt.Println("Starting in 10 seconds...")
+	time.Sleep(10 * time.Second)
+
 	cfg, err := getConfig()
 	if err != nil {
 		log.Fatal(err)
@@ -117,16 +120,22 @@ func getConfig() (Config, error) {
 }
 
 func promptUntilValid(reader *bufio.Reader, message string, isValid func(string) bool) string {
+	attempts := 0
 	for {
 		input, err := prompt(reader, message)
 		if err != nil {
 			log.Println(bold + red + "Error:" + reset + " Failed to read input.")
-			continue
-		}
-		if isValid(input) {
+			attempts++
+		} else if isValid(input) {
 			return input
+		} else {
+			log.Println(bold + red + "Error:" + reset + " Invalid input.")
+			attempts++
 		}
-		log.Println(bold + red + "Error:" + reset + " Invalid input.")
+
+		if attempts >= 5 {
+			log.Fatalf(bold + red + "Error:" + reset + " Too many invalid attempts. Exiting.")
+		}
 	}
 }
 
