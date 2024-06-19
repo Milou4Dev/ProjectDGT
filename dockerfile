@@ -14,4 +14,6 @@ WORKDIR /app
 
 COPY --from=builder /app/main .
 
+USER nonroot:nonroot
+
 CMD ["/app/main"]

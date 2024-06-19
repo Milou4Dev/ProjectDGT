@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -25,12 +26,13 @@ const (
 )
 
 type Config struct {
+	UseConfig    string
 	Token        string
 	Status       string
 	CustomStatus string
+	UseEmoji     bool
 	EmojiName    string
 	EmojiID      string
-	UseEmoji     bool
 }
 
 type DiscordUser struct {
@@ -57,10 +59,7 @@ type Activity struct {
 }
 
 func main() {
-	fmt.Println(bold + green + "Discord Online Status Setter" + reset)
-	fmt.Println("--------------------------------")
-	fmt.Println("ProjectDGT by Milou4Dev")
-	fmt.Printf("Source code: %s\n\n", projectURL)
+	printHeader()
 
 	cfg, err := getConfig()
 	if err != nil {
@@ -79,51 +78,56 @@ func main() {
 	runOnliner(cfg, user, interrupt)
 }
 
-func getConfig() (Config, error) {
-	reader := bufio.NewReader(os.Stdin)
+func printHeader() {
+	fmt.Println(bold + green + "Discord Online Status Setter" + reset)
+	fmt.Println("--------------------------------")
+	fmt.Println("ProjectDGT by Milou4Dev")
+	fmt.Printf("Source code: %s\n\n", projectURL)
+}
 
+func getConfig() (Config, error) {
+	var cfg Config
+
+	cfg.UseConfig = os.Getenv("USE_CONFIG")
+	cfg.Token = os.Getenv("TOKEN")
+	cfg.Status = os.Getenv("STATUS")
+	cfg.CustomStatus = os.Getenv("CUSTOM_STATUS")
+	cfg.UseEmoji = os.Getenv("USE_EMOJI") == "true"
+	cfg.EmojiName = os.Getenv("EMOJI_NAME")
+	cfg.EmojiID = os.Getenv("EMOJI_ID")
+
+	if strings.ToLower(cfg.UseConfig) == "on" {
+		return cfg, nil
+	}
+
+	reader := bufio.NewReader(os.Stdin)
 	fmt.Println("\n" + bold + "Configuration" + reset)
 
-	cfg := Config{}
-
-	for {
-		cfg.Token, _ = prompt(reader, "Enter your Discord token: ")
-		if cfg.Token != "" {
-			break
-		}
-		fmt.Println(bold + red + "Error:" + reset + " A valid token is required")
-	}
-
-	for {
-		cfg.Status, _ = prompt(reader, "Enter your desired status (online, dnd, idle): ")
-		if isValidStatus(cfg.Status) {
-			break
-		}
-		fmt.Println(bold + red + "Invalid status. Please enter online, dnd, or idle." + reset)
-	}
-
+	cfg.Token = promptUntilValid(reader, "Enter your Discord token: ", func(input string) bool { return input != "" })
+	cfg.Status = promptUntilValid(reader, "Enter your desired status (online, dnd, idle): ", isValidStatus)
 	cfg.CustomStatus, _ = prompt(reader, "Enter your custom status (or press enter for no custom status): ")
 
-	input, _ := prompt(reader, "Would you like to use an emoji in your custom status? (y/n): ")
-	if strings.ToLower(input) == "y" {
+	if strings.ToLower(promptUntilValid(reader, "Would you like to use an emoji in your custom status? (y/n): ", func(input string) bool { return input == "y" || input == "n" })) == "y" {
 		cfg.UseEmoji = true
-		for {
-			cfg.EmojiName, _ = prompt(reader, "Enter the emoji name: ")
-			if cfg.EmojiName != "" {
-				break
-			}
-			fmt.Println(bold + red + "Error:" + reset + " Emoji name is required.")
-		}
-		for {
-			cfg.EmojiID, _ = prompt(reader, "Enter the emoji ID: ")
-			if cfg.EmojiID != "" {
-				break
-			}
-			fmt.Println(bold + red + "Error:" + reset + " Emoji ID is required.")
-		}
+		cfg.EmojiName = promptUntilValid(reader, "Enter the emoji name: ", func(input string) bool { return input != "" })
+		cfg.EmojiID = promptUntilValid(reader, "Enter the emoji ID: ", func(input string) bool { return input != "" })
 	}
 
 	return cfg, nil
+}
+
+func promptUntilValid(reader *bufio.Reader, message string, isValid func(string) bool) string {
+	for {
+		input, err := prompt(reader, message)
+		if err != nil {
+			log.Println(bold + red + "Error:" + reset + " Failed to read input.")
+			continue
+		}
+		if isValid(input) {
+			return input
+		}
+		log.Println(bold + red + "Error:" + reset + " Invalid input.")
+	}
 }
 
 func isValidStatus(status string) bool {
@@ -141,36 +145,43 @@ func fetchUserInfo(token string) (*DiscordUser, error) {
 	req.Header.Set("Authorization", token)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to make request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer closeResponseBody(resp.Body)
+
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("invalid token provided")
+		return nil, fmt.Errorf("invalid token provided, status code: %d", resp.StatusCode)
 	}
+
 	var user DiscordUser
 	if err := json.NewDecoder(resp.Body).Decode(&user); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 	return &user, nil
 }
 
+func closeResponseBody(body io.ReadCloser) {
+	if err := body.Close(); err != nil {
+		log.Printf("Error closing response body: %v", err)
+	}
+}
+
 func runOnliner(cfg Config, user *DiscordUser, interrupt chan os.Signal) {
 	fmt.Printf("\n%sSuccessfully logged in as %s#%s (%s).%s\n", bold+green, user.Username, user.Discriminator, user.ID, reset)
-
 	fmt.Print(bold + "Setting online status... " + reset)
+
 	conn, _, err := websocket.DefaultDialer.Dial(gatewayURL, nil)
 	if err != nil {
 		log.Fatalf("Error connecting to Discord gateway: %v", err)
 	}
-	defer conn.Close()
+	defer closeConnection(conn)
 
 	heartbeatInterval, err := processHelloMessage(conn)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	err = authenticate(conn, cfg.Token)
-	if err != nil {
+	if err := authenticate(conn, cfg.Token); err != nil {
 		log.Fatal(err)
 	}
 
@@ -179,7 +190,13 @@ func runOnliner(cfg Config, user *DiscordUser, interrupt chan os.Signal) {
 		log.Fatalf("Error sending presence update: %v", err)
 	}
 
-	manageHeartbeatAndInterrupt(conn, heartbeatInterval, interrupt)
+	manageHeartbeatAndInterrupt(conn, heartbeatInterval, interrupt, cfg)
+}
+
+func closeConnection(conn *websocket.Conn) {
+	if err := conn.Close(); err != nil {
+		log.Fatalf("Error closing connection: %v", err)
+	}
 }
 
 func processHelloMessage(conn *websocket.Conn) (time.Duration, error) {
@@ -252,7 +269,7 @@ func createPresenceUpdate(cfg Config) PresenceUpdate {
 	return presenceUpdate
 }
 
-func manageHeartbeatAndInterrupt(conn *websocket.Conn, heartbeatInterval time.Duration, interrupt chan os.Signal) {
+func manageHeartbeatAndInterrupt(conn *websocket.Conn, heartbeatInterval time.Duration, interrupt chan os.Signal, cfg Config) {
 	heartbeatTicker := time.NewTicker(heartbeatInterval)
 	defer heartbeatTicker.Stop()
 
@@ -260,7 +277,10 @@ func manageHeartbeatAndInterrupt(conn *websocket.Conn, heartbeatInterval time.Du
 		select {
 		case <-heartbeatTicker.C:
 			if err := conn.WriteJSON(map[string]interface{}{"op": 1, "d": nil}); err != nil {
-				log.Fatalf("Error sending heartbeat: %v", err)
+				log.Printf("Error sending heartbeat: %v", err)
+				if err := reconnect(&conn, cfg, heartbeatTicker); err != nil {
+					log.Fatalf("Error reconnecting: %v", err)
+				}
 			}
 		case <-interrupt:
 			fmt.Println("\nExiting...")
@@ -270,4 +290,29 @@ func manageHeartbeatAndInterrupt(conn *websocket.Conn, heartbeatInterval time.Du
 			return
 		}
 	}
+}
+
+func reconnect(conn **websocket.Conn, cfg Config, heartbeatTicker *time.Ticker) error {
+	var err error
+	*conn, _, err = websocket.DefaultDialer.Dial(gatewayURL, nil)
+	if err != nil {
+		return fmt.Errorf("error reconnecting to Discord gateway: %v", err)
+	}
+
+	heartbeatInterval, err := processHelloMessage(*conn)
+	if err != nil {
+		return fmt.Errorf("error processing hello message: %v", err)
+	}
+
+	if err := authenticate(*conn, cfg.Token); err != nil {
+		return fmt.Errorf("error authenticating: %v", err)
+	}
+
+	presenceUpdate := createPresenceUpdate(cfg)
+	if err := (*conn).WriteJSON(presenceUpdate); err != nil {
+		return fmt.Errorf("error sending presence update: %v", err)
+	}
+
+	heartbeatTicker.Reset(heartbeatInterval)
+	return nil
 }
