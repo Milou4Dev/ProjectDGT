@@ -92,7 +92,7 @@ func getConfig() (Config, error) {
 	cfg.Token = os.Getenv("TOKEN")
 	cfg.Status = os.Getenv("STATUS")
 	cfg.CustomStatus = os.Getenv("CUSTOM_STATUS")
-	cfg.UseEmoji = os.Getenv("USE_EMOJI") == "true"
+	cfg.UseEmoji = os.Getenv("USE_EMOJI") == "false"
 	cfg.EmojiName = os.Getenv("EMOJI_NAME")
 	cfg.EmojiID = os.Getenv("EMOJI_ID")
 
