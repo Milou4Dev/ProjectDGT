@@ -1,4 +1,4 @@
-# ProjectDGT
+# ProjectDGT (Patches for possible bugs when hosting on replit will be available at 3pm.)
 
 ## Overview
 
