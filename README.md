@@ -2,15 +2,16 @@
 
 ## Overview
 
-ProjectDGT is a tool designed to set your Discord online status. This project leverages Docker for easy deployment and
-management. The main functionality is implemented in Go, and it uses the Gorilla WebSocket package for real-time
+ProjectDGT is a tool designed to keep your Discord status online 24/7. This project leverages Docker for easy deployment
+and management. The main functionality is implemented in Go, and it uses the Gorilla WebSocket package for real-time
 communication.
 
 ## Features
 
-- Set Discord online status
+- Set and maintain Discord online status
 - Docker support for easy deployment
 - Real-time communication using WebSockets
+- Environment variable support for hosting on platforms like Railway and Replit
 
 ## Getting Started
 
@@ -32,9 +33,15 @@ communication.
    docker buildx build --pull --no-cache --tag projectdgtimg . --load && docker run --rm -it --init projectdgtimg
    ```
 
+### Environment Variables
+
+To configure the environment variables, you can set the `USE_CONFIG` variable to `on` and fill in the other required
+variables as specified in the code.
+
 ## Usage
 
-Once the Docker container is running, follow the on-screen prompts to set your Discord online status.
+Once the Docker container is running, follow the on-screen prompts to set your Discord online status. Note: If you are
+not familiar with configuring and using emojis, it is recommended to turn them off to avoid potential issues.
 
 ## Project Structure
 
