@@ -60,7 +60,6 @@ type Activity struct {
 
 func main() {
 	printHeader()
-
 	fmt.Println("Starting in 10 seconds...")
 	time.Sleep(10 * time.Second)
 
@@ -282,14 +281,24 @@ func manageHeartbeatAndInterrupt(conn *websocket.Conn, heartbeatInterval time.Du
 	heartbeatTicker := time.NewTicker(heartbeatInterval)
 	defer heartbeatTicker.Stop()
 
+	retryAttempts := 0
+	maxRetries := 5
+
 	for {
 		select {
 		case <-heartbeatTicker.C:
 			if err := conn.WriteJSON(map[string]interface{}{"op": 1, "d": nil}); err != nil {
 				log.Printf("Error sending heartbeat: %v", err)
-				if err := reconnect(&conn, cfg, heartbeatTicker); err != nil {
-					log.Fatalf("Error reconnecting: %v", err)
+				retryAttempts++
+				if retryAttempts > maxRetries {
+					log.Println("Max retries reached. Attempting to reconnect.")
+					if err := reconnect(&conn, cfg, heartbeatTicker); err != nil {
+						log.Fatalf("Error reconnecting: %v", err)
+					}
+					retryAttempts = 0
 				}
+			} else {
+				retryAttempts = 0
 			}
 		case <-interrupt:
 			fmt.Println("\nExiting...")
