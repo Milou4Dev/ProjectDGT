@@ -30,7 +30,8 @@ communication.
 
 2. **Build and Run the Docker Container:**
    ```sh
-   docker buildx build --pull --no-cache --tag projectdgtimg . --load && docker run --rm -it --init projectdgtimg
+   docker buildx build --pull --no-cache -t projectdgtimg . && \
+   docker run --rm -it --init projectdgtimg
    ```
 
 ### Environment Variables
