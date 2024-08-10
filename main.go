@@ -5,12 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -20,6 +20,9 @@ const (
 	discordBaseURL = "https://discord.com/api/v9"
 	gatewayURL     = "wss://gateway.discord.gg/?v=9&encoding=json"
 	projectURL     = "https://github.com/Milou4Dev/ProjectDGT"
+	maxRetries     = 5
+	retryDelay     = 5 * time.Second
+	timeout        = 10 * time.Second
 )
 
 type Config struct {
@@ -56,7 +59,7 @@ type Activity struct {
 
 func main() {
 	if err := run(); err != nil {
-		log.Fatal(err)
+		log.Fatalf("Fatal error: %v", err)
 	}
 }
 
@@ -92,7 +95,7 @@ func getConfig() (Config, error) {
 			Token:        os.Getenv("TOKEN"),
 			Status:       os.Getenv("STATUS"),
 			CustomStatus: os.Getenv("CUSTOM_STATUS"),
-			UseEmoji:     os.Getenv("USE_EMOJI") == "false",
+			UseEmoji:     os.Getenv("USE_EMOJI") == "true",
 			EmojiName:    os.Getenv("EMOJI_NAME"),
 			EmojiID:      os.Getenv("EMOJI_ID"),
 		}, nil
@@ -119,7 +122,7 @@ func promptForConfig() (Config, error) {
 }
 
 func promptUntilValid(reader *bufio.Reader, message string, isValid func(string) bool) string {
-	for attempts := 0; attempts < 5; attempts++ {
+	for attempts := 0; attempts < maxRetries; attempts++ {
 		input, err := prompt(reader, message)
 		if err != nil {
 			log.Println("Error: Failed to read input.")
@@ -146,17 +149,18 @@ func prompt(reader *bufio.Reader, message string) (string, error) {
 }
 
 func fetchUserInfo(token string) (*DiscordUser, error) {
-	req, err := http.NewRequest("GET", discordBaseURL+"/users/@me", nil)
+	req, err := http.NewRequest(http.MethodGet, discordBaseURL+"/users/@me", nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Authorization", token)
 
-	resp, err := http.DefaultClient.Do(req)
+	client := &http.Client{Timeout: timeout}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to make request: %w", err)
 	}
-	defer closeBody(resp.Body)
+	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("invalid token provided, status code: %d", resp.StatusCode)
@@ -167,12 +171,6 @@ func fetchUserInfo(token string) (*DiscordUser, error) {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 	return &user, nil
-}
-
-func closeBody(body io.ReadCloser) {
-	if err := body.Close(); err != nil {
-		log.Printf("error closing body: %v", err)
-	}
 }
 
 func runOnliner(cfg Config, user *DiscordUser) error {
@@ -186,7 +184,7 @@ func runOnliner(cfg Config, user *DiscordUser) error {
 	if err != nil {
 		return fmt.Errorf("error connecting to Discord gateway: %w", err)
 	}
-	defer closeConnection(conn)
+	defer conn.Close()
 
 	heartbeatInterval, err := processHelloMessage(conn)
 	if err != nil {
@@ -203,12 +201,6 @@ func runOnliner(cfg Config, user *DiscordUser) error {
 	}
 
 	return manageHeartbeatAndInterrupt(ctx, conn, heartbeatInterval, cfg)
-}
-
-func closeConnection(conn *websocket.Conn) {
-	if err := conn.Close(); err != nil {
-		log.Printf("error closing connection: %v", err)
-	}
 }
 
 func processHelloMessage(conn *websocket.Conn) (time.Duration, error) {
@@ -287,20 +279,38 @@ func manageHeartbeatAndInterrupt(ctx context.Context, conn *websocket.Conn, hear
 	interrupt := make(chan os.Signal, 1)
 	signal.Notify(interrupt, os.Interrupt)
 
-	for {
-		select {
-		case <-heartbeatTicker.C:
-			if err := sendHeartbeat(conn); err != nil {
-				if err := reconnect(conn, cfg, heartbeatTicker); err != nil {
-					return fmt.Errorf("error reconnecting: %w", err)
+	var wg sync.WaitGroup
+	errChan := make(chan error, 1)
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-heartbeatTicker.C:
+				if err := sendHeartbeat(conn); err != nil {
+					if err := reconnect(conn, cfg, heartbeatTicker); err != nil {
+						errChan <- fmt.Errorf("error reconnecting: %w", err)
+						return
+					}
 				}
+			case <-ctx.Done():
+				return
 			}
-		case <-interrupt:
-			fmt.Println("\nExiting...")
-			return conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
-		case <-ctx.Done():
-			return nil
 		}
+	}()
+
+	select {
+	case <-interrupt:
+		fmt.Println("\nExiting...")
+		cancel := func() {
+			ctx.Done()
+			wg.Wait()
+		}
+		defer cancel()
+		return conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+	case err := <-errChan:
+		return err
 	}
 }
 
@@ -310,7 +320,13 @@ func sendHeartbeat(conn *websocket.Conn) error {
 
 func reconnect(conn *websocket.Conn, cfg Config, heartbeatTicker *time.Ticker) error {
 	var err error
-	conn, _, err = websocket.DefaultDialer.Dial(gatewayURL, nil)
+	for i := 0; i < maxRetries; i++ {
+		conn, _, err = websocket.DefaultDialer.Dial(gatewayURL, nil)
+		if err == nil {
+			break
+		}
+		time.Sleep(retryDelay)
+	}
 	if err != nil {
 		return fmt.Errorf("error reconnecting to Discord gateway: %w", err)
 	}

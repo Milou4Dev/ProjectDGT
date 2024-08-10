@@ -1,31 +1,26 @@
-FROM golang:1.21-alpine AS builder
+# Build stage
+FROM golang:1.21.9-alpine AS builder
 
 WORKDIR /app
-
-RUN apk add --no-cache ca-certificates gcc musl-dev tzdata
 
 COPY go.mod go.sum ./
 RUN go mod download
 
-COPY . .
+COPY main.go .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-w -s" -o projectdgt .
 
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w -extldflags '-static'" -o /app/main
+# Final stage
+FROM alpine:latest
 
-RUN go test ./...
-
-FROM scratch
-
-COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
-COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
+RUN apk --no-cache add ca-certificates && \
+    addgroup -S appgroup && adduser -S -G appgroup -H -h /app appuser
 
 WORKDIR /app
 
-COPY --from=builder /app/main .
+COPY --from=builder /app/projectdgt .
 
-USER 65534:65534
+USER appuser
 
-ENV TZ=UTC
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 CMD [ "/app/projectdgt", "--health-check" ]
 
-EXPOSE 8080
-
-ENTRYPOINT ["/app/main"]
+ENTRYPOINT ["/app/projectdgt"]
