@@ -154,18 +154,6 @@ Contributions are welcome and appreciated! Here's how you can contribute:
 
 Please ensure your code adheres to the project's coding standards and includes appropriate tests.
 
-## License
-
-This project is licensed under the Apache License 2.0. See the [LICENSE](LICENSE) file for the full license text.
-
-Key points of the Apache License 2.0:
-
-- You can freely use, modify, distribute, and sell this software.
-- You must include the original copyright notice and license in any copy of the software/source.
-- You receive no warranty or guarantee for the software.
-- If you modify the code, you must indicate significant changes made to it.
-- The license provides an express grant of patent rights from contributors to users.
-
 ## Acknowledgements
 
 - [Gorilla WebSocket](https://github.com/gorilla/websocket) for the robust WebSocket implementation.
