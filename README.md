@@ -1,1 +1,1 @@
-Being rebuilt
+The original plan for ProjectDGT was to serve as a Discord toolbox. However, my interests have shifted recently. I thus had an idea for a program that would actually benefit people. I'm putting a lot of effort into finishing the code as soon as I can.
